@@ -1,0 +1,19 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4024.12">
+  <DUT Name="E_Charger_State" Id="{ef6a977e-8982-47a4-85b0-d8e1c227997c}">
+    <Declaration><![CDATA[TYPE E_Charger_State :
+(
+    eCHG_IDLE           := 0,   // Warte auf Freigabe
+    eCHG_INIT           := 1,   // Initialisierung Netzteil
+    eCHG_CONFIGURING    := 2,   // Parameter schreiben
+    eCHG_CC             := 4,   // Konstantstrom-Phase
+    eCHG_CV             := 5,   // Konstantspannungs-Phase
+    eCHG_DONE           := 6,   // Laden abgeschlossen
+    eCHG_FAULT          := 7,   // Fehler
+    eCHG_FAULT_RESET    := 8,   // Fehler quittieren
+    eCHG_STOPPING       := 9,   // Ausgang abschalten
+    eCHG_COMM_ERROR     := 10   // Kommunikationsfehler
+);
+END_TYPE]]></Declaration>
+  </DUT>
+</TcPlcObject>

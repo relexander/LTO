@@ -1,0 +1,47 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4024.12">
+  <POU Name="FUN_PMBus_RealToVout" Id="{1dc14591-2302-4a56-a70b-52b371f643a1}" SpecialFunc="None">
+    <Declaration><![CDATA[FUNCTION FUN_PMBus_RealToVout : WORD
+VAR_INPUT
+    rVoltage    : REAL;
+    byVoutMode  : BYTE;
+END_VAR
+VAR
+    nN      : INT;
+    rScale  : REAL;
+    i       : INT;
+    rRaw    : REAL;
+END_VAR]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[// N aus VOUT_MODE (Bits 4..0, 5-Bit Two's Complement)
+nN := byVoutMode AND 16#1F;
+IF (nN AND 16#10) <> 0 THEN
+    nN := nN OR 16#FFE0;
+END_IF
+
+// Rohwert = Volt / 2^N → Scale = 2^(-N)
+rScale := 1.0;
+IF nN >= 0 THEN
+    FOR i := 1 TO nN DO
+        rScale := rScale / 2.0;
+    END_FOR
+ELSE
+    FOR i := 1 TO (-nN) DO
+        rScale := rScale * 2.0;
+    END_FOR
+END_IF
+
+rRaw := rVoltage * rScale;
+
+// Begrenzung auf WORD-Bereich
+IF rRaw < 0.0 THEN rRaw := 0.0; END_IF
+IF rRaw > 65535.0 THEN rRaw := 65535.0; END_IF
+
+FUN_PMBus_RealToVout := REAL_TO_WORD(rRaw);]]></ST>
+    </Implementation>
+    <LineIds Name="FUN_PMBus_RealToVout">
+      <LineId Id="20" Count="23" />
+      <LineId Id="9" Count="0" />
+    </LineIds>
+  </POU>
+</TcPlcObject>

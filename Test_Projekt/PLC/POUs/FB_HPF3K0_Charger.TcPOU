@@ -1,0 +1,682 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4024.12">
+  <POU Name="FB_HPF3K0_Charger" Id="{106a91bd-f219-4ea4-9f16-4e5e2cdd5ea3}" SpecialFunc="None">
+    <Declaration><![CDATA[FUNCTION_BLOCK FB_HPF3K0_Charger
+VAR_INPUT
+    bEnable             : BOOL;         // Grundfreigabe
+    bCmd_StartCharge    : BOOL;         // Laden starten
+    bCmd_StopCharge     : BOOL;         // Laden stoppen
+    bCmd_FaultReset     : BOOL;         // Fehler quittieren (Flanke)
+    stParams            : ST_Charger_Parameters;
+END_VAR
+VAR_OUTPUT
+    eState              : E_Charger_State;
+    stMeas              : ST_PSU_Measurements;
+    stStatus            : ST_PSU_Status;
+    stDiag              : ST_Charger_Diagnostics;
+    bCharging           : BOOL;         // TRUE = Ladevorgang aktiv
+    bChargeDone         : BOOL;         // TRUE = Laden abgeschlossen
+    bFault              : BOOL;
+    bCommOK             : BOOL;
+    sStateText          : STRING(64);
+END_VAR
+VAR
+    // Modbus Sequencer
+    fbModbus            : FB_Modbus_Sequencer;
+
+    // Interner VOUT_MODE (gelesen bei Init)
+    byVoutMode          : BYTE := 16#16;
+
+    // Polling
+    nPollStep           : INT;
+    tPollTimer          : TON;
+    bPollTrigger        : BOOL;
+
+    // Schreib-Sequenz
+    nWriteStep          : INT;
+    bWriteActive        : BOOL;
+
+    // Flanken
+    bFaultReset_old     : BOOL;
+    bStartCharge_old    : BOOL;
+
+    // State Timer
+    tStateTimer         : TON;
+    tCommWatchdog       : TON;
+
+    // CV Regelung
+    tCvTimer            : TON;
+    rVout_Setpoint_act  : REAL;     // Aktiver Spannungssollwert
+	rIout_Limit_act     : REAL;     // Aktives Stromlimit
+	rCvError            : REAL;     // Hilfsvariable CV-Regler
+
+    // Rohdaten Polling
+    wRawVout            : WORD;
+    wRawIout            : WORD;
+    wRawPout            : WORD;
+    wRawVin             : WORD;
+    wRawTemp1           : WORD;
+    wRawTemp2           : WORD;
+    wRawFan1            : WORD;
+    wRawStatusWord      : WORD;
+    wRawStatusVout      : WORD;
+    wRawStatusIout      : WORD;
+    wRawStatusTemp      : WORD;
+    wRawState           : WORD;
+
+    // Init Flag
+    bInitDone           : BOOL;
+END_VAR]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[// ════════════════════════════════════════════════════════════════
+// GUARD
+// ════════════════════════════════════════════════════════════════
+IF NOT bEnable THEN
+    eState      := eCHG_IDLE;
+    bCharging   := FALSE;
+    bChargeDone := FALSE;
+    bFault      := FALSE;
+    sStateText  := 'GESPERRT';
+    // Ausgang sicher ausschalten
+    ACT_SendOperationOFF();
+    RETURN;
+END_IF
+
+// ════════════════════════════════════════════════════════════════
+// HAUPTZUSTANDSAUTOMAT
+// ════════════════════════════════════════════════════════════════
+CASE eState OF
+
+    // ── IDLE ─────────────────────────────────────────────────────
+    eCHG_IDLE:
+        sStateText  := 'BEREIT';
+        bCharging   := FALSE;
+        bChargeDone := FALSE;
+        bInitDone   := FALSE;
+        eState      := eCHG_INIT;
+
+    // ── INIT ─────────────────────────────────────────────────────
+    eCHG_INIT:
+        sStateText := 'INITIALISIERUNG...';
+        ACT_Poll();
+
+        IF stDiag.bCommAlive AND NOT bInitDone THEN
+            bInitDone := TRUE;
+            eState    := eCHG_CONFIGURING;
+        END_IF
+        IF NOT bCommOK AND tCommWatchdog.Q THEN
+            eState := eCHG_COMM_ERROR;
+        END_IF
+
+    // ── KONFIGURIEREN ────────────────────────────────────────────
+    eCHG_CONFIGURING:
+        sStateText := 'KONFIGURIERE...';
+        ACT_WriteParameters();
+        ACT_Poll();
+
+        IF NOT bWriteActive THEN
+            eState := eCHG_STOPPING;
+        END_IF
+        IF NOT bCommOK AND tCommWatchdog.Q THEN
+            eState := eCHG_COMM_ERROR;
+        END_IF
+
+    // ── STOPPEN / WARTEN ─────────────────────────────────────────
+    eCHG_STOPPING:
+        sStateText  := 'WARTE AUF STARTBEFEHL';
+        bCharging   := FALSE;
+        ACT_SendOperationOFF();
+        ACT_Poll();
+
+		IF bCmd_StartCharge AND NOT bStartCharge_old THEN
+			bChargeDone            := FALSE;
+			rVout_Setpoint_act     := stParams.rVout_Target;
+			eState                 := eCHG_CC;
+		END_IF
+        IF NOT bCommOK AND tCommWatchdog.Q THEN
+            eState := eCHG_COMM_ERROR;
+        END_IF
+
+
+    // ── CC-PHASE (Konstantstrom) ──────────────────────────────────
+    eCHG_CC:
+        sStateText := CONCAT('CC | I=',
+                     CONCAT(REAL_TO_STRING(stMeas.rIout), 'A'));
+        bCharging  := TRUE;
+
+        // Spannung auf Zielspannung setzen
+        // Netzteil begrenzt Strom automatisch über IOUT_OC_LIMIT
+        rVout_Setpoint_act := stParams.rVout_Target;
+		ACT_SetVoltage();
+ 		rIout_Limit_act := stParams.rIout_Limit;
+		ACT_SetCurrentLimit();
+      
+
+        // CC→CV Übergang: Spannung hat Zielwert erreicht
+        IF stMeas.rVout >= (stParams.rVout_Target - GVL_HW.c_CV_VOLTAGE_TOLERANCE) THEN
+            rVout_Setpoint_act := stParams.rVout_Target;
+            eState := eCHG_CV;
+        END_IF
+
+        ACT_CheckFaults();
+        IF bCmd_StopCharge THEN eState := eCHG_STOPPING; END_IF
+        IF NOT bCommOK AND tCommWatchdog.Q THEN
+            eState := eCHG_COMM_ERROR;
+        END_IF
+
+    // ── CV-PHASE (Konstantspannung) ───────────────────────────────
+    eCHG_CV:
+        sStateText := CONCAT('CV | U=',
+                     CONCAT(REAL_TO_STRING(stMeas.rVout), 'V'));
+        bCharging  := TRUE;
+        ACT_Poll();
+    
+
+        // Spannung regeln
+        tCvTimer(IN := TRUE, PT := GVL_HW.c_CV_REGULATE_CYCLE);
+        IF tCvTimer.Q THEN
+            tCvTimer(IN := FALSE);
+            ACT_CvRegulate();
+        END_IF
+
+        // Ladeende: Strom unter Schwellwert gesunken
+        IF stMeas.rIout < stParams.rCharge_End_Current
+           AND stMeas.rIout >= 0.0 THEN
+            stDiag.tChargeEndTime   := DT#1970-01-01-00:00:00;
+            eState := eCHG_DONE;
+        END_IF
+
+        ACT_CheckFaults();
+        IF bCmd_StopCharge THEN eState := eCHG_STOPPING; END_IF
+        IF NOT bCommOK AND tCommWatchdog.Q THEN
+            eState := eCHG_COMM_ERROR;
+        END_IF
+
+    // ── LADEN ABGESCHLOSSEN ───────────────────────────────────────
+    eCHG_DONE:
+        sStateText  := 'LADEN ABGESCHLOSSEN';
+        bCharging   := FALSE;
+        bChargeDone := TRUE;
+        stDiag.nChargeCount := stDiag.nChargeCount + 1;
+
+        // Ausgang ausschalten
+        ACT_SendOperationOFF();
+        ACT_Poll();
+
+        // Auf neuen Startbefehl warten
+        IF bCmd_StartCharge AND NOT bStartCharge_old THEN
+            bChargeDone := FALSE;
+            rVout_Setpoint_act := stParams.rVout_Target;
+			eState             := eCHG_CC;
+        END_IF
+
+    // ── FEHLER ────────────────────────────────────────────────────
+    eCHG_FAULT:
+        sStateText  := CONCAT('FEHLER: ', stDiag.sLastFault);
+        bFault      := TRUE;
+        bCharging   := FALSE;
+        ACT_SendOperationOFF();
+        ACT_Poll();
+
+        IF bCmd_FaultReset AND NOT bFaultReset_old THEN
+            eState := eCHG_FAULT_RESET;
+        END_IF
+
+    // ── FEHLER QUITTIEREN ────────────────────────────────────────
+    eCHG_FAULT_RESET:
+        sStateText := 'QUITTIERE FEHLER...';
+        ACT_ClearFaults();
+
+        tStateTimer(IN := TRUE, PT := T#2000MS);
+        IF tStateTimer.Q THEN
+            tStateTimer(IN := FALSE);
+            bFault  := FALSE;
+            eState  := eCHG_CONFIGURING;
+        END_IF
+
+    // ── KOMMUNIKATIONSFEHLER ──────────────────────────────────────
+    eCHG_COMM_ERROR:
+        sStateText  := 'KOMMUNIKATIONSFEHLER!';
+        bFault      := TRUE;
+        bCharging   := FALSE;
+
+        IF bCommOK THEN
+            bFault := FALSE;
+            eState := eCHG_INIT;
+        END_IF
+
+END_CASE
+
+// ════════════════════════════════════════════════════════════════
+// FLANKEN MERKEN
+// ════════════════════════════════════════════════════════════════
+bFaultReset_old  := bCmd_FaultReset;
+bStartCharge_old := bCmd_StartCharge;
+
+// ════════════════════════════════════════════════════════════════
+// KOMMUNIKATIONS-WATCHDOG
+// ════════════════════════════════════════════════════════════════
+tCommWatchdog(IN := NOT bCommOK, PT := T#5000MS);
+stDiag.bCommAlive := NOT tCommWatchdog.Q;
+
+// Qualität berechnen
+IF (stDiag.dwCommOK_Count + stDiag.dwCommErr_Count) > 0 THEN
+    stDiag.rCommQuality :=
+        DWORD_TO_REAL(stDiag.dwCommOK_Count) /
+        DWORD_TO_REAL(stDiag.dwCommOK_Count + stDiag.dwCommErr_Count)
+        * 100.0;
+END_IF
+
+// DO Ausgänge
+GVL_HW.bDO_PSU_Ready := bCharging AND bCommOK;
+GVL_HW.bDO_PSU_Fault := bFault;]]></ST>
+    </Implementation>
+    <Action Name="ACT_CheckFaults" Id="{573a1634-4793-4762-a0a0-8d38cdf5259a}">
+      <Implementation>
+        <ST><![CDATA[// Kritische Fehler → sofort in FAULT
+IF stStatus.bVout_OV_Fault THEN
+    stDiag.sLastFault := 'ÜBERSPANNUNG AUSGANG';
+    eState := eCHG_FAULT;
+ELSIF stStatus.bOT_Fault THEN
+    stDiag.sLastFault := 'ÜBERTEMPERATUR';
+    eState := eCHG_FAULT;
+ELSIF stStatus.bVin_UV_Fault THEN
+    stDiag.sLastFault := 'EINGANGSSPANNUNG FEHLT';
+    eState := eCHG_FAULT;
+ELSIF stStatus.bFan_Fault THEN
+    stDiag.sLastFault := 'LÜFTER FEHLER';
+    eState := eCHG_FAULT;
+ELSIF GVL_HW.bDI_FanFail THEN
+    stDiag.sLastFault := 'BATTERIE TEMP/FAN WARNUNG';
+    eState := eCHG_FAULT;
+ELSIF stMeas.rVout > GVL_HW.c_BAT_VOLTAGE_MAX THEN
+    stDiag.sLastFault := 'BATTERIE ÜBERSPANNUNG';
+    eState := eCHG_FAULT;
+END_IF
+
+// Fehler in Historie schreiben
+IF eState = eCHG_FAULT THEN
+    stDiag.aFaultHistory[stDiag.nFaultIdx] := stDiag.sLastFault;
+    stDiag.nFaultIdx := (stDiag.nFaultIdx + 1) MOD 10;
+END_IF]]></ST>
+      </Implementation>
+    </Action>
+    <Action Name="ACT_ClearFaults" Id="{bc8bcad8-00b0-42a6-a9b2-1b50c0587c04}">
+      <Implementation>
+        <ST><![CDATA[CASE nWriteStep OF
+    0:  fbModbus(
+            bExecute      := TRUE,
+            nSlaveAdr     := GVL_HW.c_MODBUS_SLAVE_ADR,
+            nFunctionCode := 16#06,
+            nRegAdr       := GVL_HW.c_CMD_WRITE_PROTECT,
+            nQuantity     := 1,
+            wWriteData    := BYTE_TO_WORD(GVL_HW.c_WP_UNLOCK),
+            tTimeout      := GVL_HW.c_MODBUS_TIMEOUT,
+            nMaxRetry     := 1);
+        IF fbModbus.bDone THEN
+            fbModbus(bExecute := FALSE);
+            nWriteStep := 1;
+        END_IF
+
+    1:  fbModbus(
+            bExecute      := TRUE,
+            nSlaveAdr     := GVL_HW.c_MODBUS_SLAVE_ADR,
+            nFunctionCode := 16#06,
+            nRegAdr       := GVL_HW.c_CMD_CLEAR_FAULTS,
+            nQuantity     := 1,
+            wWriteData    := 0,
+            tTimeout      := GVL_HW.c_MODBUS_TIMEOUT,
+            nMaxRetry     := 1);
+        IF fbModbus.bDone OR fbModbus.bError THEN
+            fbModbus(bExecute := FALSE);
+            nWriteStep := 2;
+        END_IF
+
+    2:  fbModbus(
+            bExecute      := TRUE,
+            nSlaveAdr     := GVL_HW.c_MODBUS_SLAVE_ADR,
+            nFunctionCode := 16#06,
+            nRegAdr       := GVL_HW.c_CMD_WRITE_PROTECT,
+            nQuantity     := 1,
+            wWriteData    := BYTE_TO_WORD(GVL_HW.c_WP_LOCK),
+            tTimeout      := GVL_HW.c_MODBUS_TIMEOUT,
+            nMaxRetry     := 1);
+        IF fbModbus.bDone OR fbModbus.bError THEN
+            fbModbus(bExecute := FALSE);
+            nWriteStep := 0;
+        END_IF
+END_CASE]]></ST>
+      </Implementation>
+    </Action>
+    <Action Name="ACT_CvRegulate" Id="{0b148bc5-8fff-4624-bb89-a4d7f7735183}">
+      <Implementation>
+        <ST><![CDATA[rCvError := stParams.rVout_Target - stMeas.rVout;
+
+IF rCvError > GVL_HW.c_CV_VOLTAGE_TOLERANCE THEN
+    rVout_Setpoint_act := rVout_Setpoint_act + GVL_HW.c_CV_STEP_UP;
+ELSIF rCvError < (-GVL_HW.c_CV_VOLTAGE_TOLERANCE) THEN
+    rVout_Setpoint_act := rVout_Setpoint_act - GVL_HW.c_CV_STEP_DOWN;
+END_IF
+
+// Begrenzung
+IF rVout_Setpoint_act > GVL_HW.c_BAT_VOLTAGE_MAX THEN
+    rVout_Setpoint_act := GVL_HW.c_BAT_VOLTAGE_MAX;
+END_IF
+IF rVout_Setpoint_act < 0.0 THEN
+    rVout_Setpoint_act := 0.0;
+END_IF
+
+ACT_SetVoltage();]]></ST>
+      </Implementation>
+    </Action>
+    <Action Name="ACT_Poll" Id="{e12ddb4c-6cae-43e8-ab3d-f4608bcf7a7e}">
+      <Implementation>
+        <ST><![CDATA[// Zyklisches Round-Robin Lesen aller Register
+tPollTimer(IN := TRUE, PT := GVL_HW.c_POLL_CYCLE);
+IF tPollTimer.Q THEN
+    tPollTimer(IN := FALSE);
+    bPollTrigger := TRUE;
+END_IF
+
+IF NOT bPollTrigger THEN RETURN; END_IF
+
+fbModbus(
+    bExecute      := bPollTrigger,
+    nSlaveAdr     := GVL_HW.c_MODBUS_SLAVE_ADR,
+    nFunctionCode := 16#03,
+    nQuantity     := 1,
+    tTimeout      := GVL_HW.c_MODBUS_TIMEOUT,
+    nMaxRetry     := GVL_HW.c_MODBUS_RETRY
+);
+
+IF fbModbus.bBusy THEN RETURN; END_IF
+
+IF fbModbus.bError THEN
+    stDiag.dwCommErr_Count := stDiag.dwCommErr_Count + 1;
+    bCommOK      := FALSE;
+    bPollTrigger := FALSE;
+    nPollStep    := nPollStep + 1;
+    IF nPollStep > 11 THEN nPollStep := 1; END_IF
+    RETURN;
+END_IF
+
+IF fbModbus.bDone THEN
+    stDiag.dwCommOK_Count := stDiag.dwCommOK_Count + 1;
+    bCommOK      := TRUE;
+    bPollTrigger := FALSE;
+
+    CASE nPollStep OF
+        0:  // VOUT_MODE (nur einmal bei Init)
+            byVoutMode := WORD_TO_BYTE(fbModbus.wReadData AND 16#FF);
+            fbModbus.nRegAdr := GVL_HW.c_CMD_VOUT_MODE;
+
+        1:  fbModbus.nRegAdr := GVL_HW.c_CMD_READ_VOUT;
+            wRawVout := fbModbus.wReadData;
+            stMeas.rVout := FUN_PMBus_VoutToReal(wRawVout, byVoutMode);
+
+        2:  fbModbus.nRegAdr := GVL_HW.c_CMD_READ_IOUT;
+            wRawIout := fbModbus.wReadData;
+            stMeas.rIout := FUN_PMBus_LinearToReal(wRawIout);
+
+        3:  fbModbus.nRegAdr := GVL_HW.c_CMD_READ_POUT;
+            wRawPout := fbModbus.wReadData;
+            stMeas.rPout := FUN_PMBus_LinearToReal(wRawPout);
+
+        4:  fbModbus.nRegAdr := GVL_HW.c_CMD_READ_VIN;
+            wRawVin := fbModbus.wReadData;
+            stMeas.rVin := FUN_PMBus_LinearToReal(wRawVin);
+
+        5:  fbModbus.nRegAdr := GVL_HW.c_CMD_READ_TEMP1;
+            wRawTemp1 := fbModbus.wReadData;
+            stMeas.rTemp_Sec := FUN_PMBus_LinearToReal(wRawTemp1);
+
+        6:  fbModbus.nRegAdr := GVL_HW.c_CMD_READ_TEMP2;
+            wRawTemp2 := fbModbus.wReadData;
+            stMeas.rTemp_Pri := FUN_PMBus_LinearToReal(wRawTemp2);
+
+        7:  fbModbus.nRegAdr := GVL_HW.c_CMD_READ_FAN1;
+            wRawFan1 := fbModbus.wReadData;
+            stMeas.rFan1_RPM := FUN_PMBus_LinearToReal(wRawFan1);
+
+        8:  fbModbus.nRegAdr := GVL_HW.c_CMD_STATUS_WORD;
+            wRawStatusWord := fbModbus.wReadData;
+            // STATUS_WORD dekodieren
+            stStatus.wStatusWord        := wRawStatusWord;
+            stStatus.bVout_Fault        := (wRawStatusWord AND 16#8000) <> 0;
+            stStatus.bIout_Fault        := (wRawStatusWord AND 16#4000) <> 0;
+            stStatus.bInput_Fault       := (wRawStatusWord AND 16#2000) <> 0;
+            stStatus.bFan_Fault         := (wRawStatusWord AND 16#0400) <> 0;
+            stStatus.bOff               := (wRawStatusWord AND 16#0040) <> 0;
+            stStatus.bVout_OV_Fault     := (wRawStatusWord AND 16#0020) <> 0;
+            stStatus.bIout_OC_Fault     := (wRawStatusWord AND 16#0010) <> 0;
+            stStatus.bVin_UV_Fault      := (wRawStatusWord AND 16#0008) <> 0;
+            stStatus.bTemperature_Fault := (wRawStatusWord AND 16#0004) <> 0;
+
+        9:  fbModbus.nRegAdr := GVL_HW.c_CMD_STATUS_IOUT;
+            wRawStatusIout := fbModbus.wReadData AND 16#FF;
+            stStatus.bIout_OC_Fault := (wRawStatusIout AND 16#80) <> 0;
+            stStatus.bIout_OC_Warn  := (wRawStatusIout AND 16#20) <> 0;
+            stStatus.bInCurrentLimit := (wRawStatusIout AND 16#04) <> 0;
+
+        10: fbModbus.nRegAdr := GVL_HW.c_CMD_STATUS_TEMP;
+            wRawStatusTemp := fbModbus.wReadData AND 16#FF;
+            stStatus.bOT_Fault   := (wRawStatusTemp AND 16#80) <> 0;
+            stStatus.bOT_Warning := (wRawStatusTemp AND 16#40) <> 0;
+
+        11: fbModbus.nRegAdr := GVL_HW.c_CMD_STATE_INTERNAL;
+            wRawState := fbModbus.wReadData;
+            stStatus.wStateInternal := wRawState;
+            stStatus.sStateName := FUN_StateToString(wRawState);
+
+    END_CASE
+
+    nPollStep := nPollStep + 1;
+    IF nPollStep > 11 THEN nPollStep := 1; END_IF
+END_IF]]></ST>
+      </Implementation>
+    </Action>
+    <Action Name="ACT_SendOperationOFF" Id="{cf460618-a1f1-499e-be2e-c5dacc81286d}">
+      <Implementation>
+        <ST><![CDATA[IF fbModbus.bBusy THEN RETURN; END_IF
+
+fbModbus(
+    bExecute      := TRUE,
+    nSlaveAdr     := GVL_HW.c_MODBUS_SLAVE_ADR,
+    nFunctionCode := 16#06,
+    nRegAdr       := GVL_HW.c_CMD_OPERATION,
+    nQuantity     := 1,
+    wWriteData    := BYTE_TO_WORD(GVL_HW.c_OP_OFF),
+    tTimeout      := GVL_HW.c_MODBUS_TIMEOUT,
+    nMaxRetry     := 1
+);]]></ST>
+      </Implementation>
+    </Action>
+    <Action Name="ACT_SendOperationON" Id="{8a0f2993-4ae2-4726-8647-90404cf05775}">
+      <Implementation>
+        <ST><![CDATA[IF fbModbus.bBusy THEN RETURN; END_IF
+
+fbModbus(
+    bExecute      := TRUE,
+    nSlaveAdr     := GVL_HW.c_MODBUS_SLAVE_ADR,
+    nFunctionCode := 16#06,
+    nRegAdr       := GVL_HW.c_CMD_OPERATION,
+    nQuantity     := 1,
+    wWriteData    := BYTE_TO_WORD(GVL_HW.c_OP_ON),
+    tTimeout      := GVL_HW.c_MODBUS_TIMEOUT,
+    nMaxRetry     := 1
+);
+]]></ST>
+      </Implementation>
+    </Action>
+    <Action Name="ACT_SetCurrentLimit" Id="{79b7dcc9-1124-4b90-82e4-0aaf2a716807}">
+      <Implementation>
+        <ST><![CDATA[IF fbModbus.bBusy THEN RETURN; END_IF
+
+fbModbus(
+    bExecute      := TRUE,
+    nSlaveAdr     := GVL_HW.c_MODBUS_SLAVE_ADR,
+    nFunctionCode := 16#06,
+    nRegAdr       := GVL_HW.c_CMD_IOUT_OC_LIMIT,
+    nQuantity     := 1,
+    wWriteData    := FUN_PMBus_RealToVout(stParams.rIout_Limit, byVoutMode),
+    tTimeout      := GVL_HW.c_MODBUS_TIMEOUT,
+    nMaxRetry     := 1
+);]]></ST>
+      </Implementation>
+    </Action>
+    <Action Name="ACT_SetVoltage" Id="{86710758-8d74-4ec1-91bb-83eef53b36b5}">
+      <Implementation>
+        <ST><![CDATA[// Setzt VOUT_COMMAND über Modbus
+// Wird nur aufgerufen wenn kein Poll läuft
+IF fbModbus.bBusy THEN RETURN; END_IF
+
+fbModbus(
+    bExecute      := TRUE,
+    nSlaveAdr     := GVL_HW.c_MODBUS_SLAVE_ADR,
+    nFunctionCode := 16#06,
+    nRegAdr       := GVL_HW.c_CMD_VOUT_COMMAND,
+    nQuantity     := 1,
+    wWriteData    := FUN_PMBus_RealToVout(rVout_Setpoint_act, byVoutMode),
+    tTimeout      := GVL_HW.c_MODBUS_TIMEOUT,
+    nMaxRetry     := 1
+); ]]></ST>
+      </Implementation>
+    </Action>
+    <Action Name="ACT_WriteParameters" Id="{0f3174b6-8373-4210-846f-9d18849dcd4d}">
+      <Implementation>
+        <ST><![CDATA[IF NOT bWriteActive THEN
+    bWriteActive := TRUE;
+    nWriteStep   := 0;
+END_IF
+
+CASE nWriteStep OF
+    0:  fbModbus(
+            bExecute      := TRUE,
+            nSlaveAdr     := GVL_HW.c_MODBUS_SLAVE_ADR,
+            nFunctionCode := 16#06,
+            nRegAdr       := GVL_HW.c_CMD_WRITE_PROTECT,
+            nQuantity     := 1,
+            wWriteData    := BYTE_TO_WORD(GVL_HW.c_WP_UNLOCK),
+            tTimeout      := GVL_HW.c_MODBUS_TIMEOUT,
+            nMaxRetry     := GVL_HW.c_MODBUS_RETRY);
+        IF fbModbus.bDone THEN
+            fbModbus(bExecute := FALSE);
+            nWriteStep := 1;
+        END_IF
+
+    1:  fbModbus(
+            bExecute      := TRUE,
+            nSlaveAdr     := GVL_HW.c_MODBUS_SLAVE_ADR,
+            nFunctionCode := 16#06,
+            nRegAdr       := GVL_HW.c_CMD_VOUT_COMMAND,
+            nQuantity     := 1,
+            wWriteData    := FUN_PMBus_RealToVout(
+                                stParams.rVout_Target, byVoutMode),
+            tTimeout      := GVL_HW.c_MODBUS_TIMEOUT,
+            nMaxRetry     := GVL_HW.c_MODBUS_RETRY);
+        IF fbModbus.bDone THEN
+            fbModbus(bExecute := FALSE);
+            nWriteStep := 2;
+        END_IF
+
+    2:  fbModbus(
+            bExecute      := TRUE,
+            nSlaveAdr     := GVL_HW.c_MODBUS_SLAVE_ADR,
+            nFunctionCode := 16#06,
+            nRegAdr       := GVL_HW.c_CMD_IOUT_OC_LIMIT,
+            nQuantity     := 1,
+            wWriteData    := FUN_PMBus_RealToVout(
+                                rIout_Limit_act, byVoutMode),
+            tTimeout      := GVL_HW.c_MODBUS_TIMEOUT,
+            nMaxRetry     := GVL_HW.c_MODBUS_RETRY);
+        IF fbModbus.bDone THEN
+            fbModbus(bExecute := FALSE);
+            nWriteStep := 3;
+        END_IF
+
+    3:  // OVP setzen (Batterie Schutzlimit)
+        fbModbus(
+            bExecute      := TRUE,
+            nSlaveAdr     := GVL_HW.c_MODBUS_SLAVE_ADR,
+            nFunctionCode := 16#06,
+            nRegAdr       := 16#40,  // VOUT_OV_FAULT_LIMIT
+            nQuantity     := 1,
+            wWriteData    := FUN_PMBus_RealToVout(
+                                stParams.rVout_OV_Fault, byVoutMode),
+            tTimeout      := GVL_HW.c_MODBUS_TIMEOUT,
+            nMaxRetry     := GVL_HW.c_MODBUS_RETRY);
+        IF fbModbus.bDone THEN
+            fbModbus(bExecute := FALSE);
+            nWriteStep := 4;
+        END_IF
+
+    4:  // Schreibschutz wieder setzen
+        fbModbus(
+            bExecute      := TRUE,
+            nSlaveAdr     := GVL_HW.c_MODBUS_SLAVE_ADR,
+            nFunctionCode := 16#06,
+            nRegAdr       := GVL_HW.c_CMD_WRITE_PROTECT,
+            nQuantity     := 1,
+            wWriteData    := BYTE_TO_WORD(GVL_HW.c_WP_LOCK),
+            tTimeout      := GVL_HW.c_MODBUS_TIMEOUT,
+            nMaxRetry     := GVL_HW.c_MODBUS_RETRY);
+        IF fbModbus.bDone OR fbModbus.bError THEN
+            fbModbus(bExecute := FALSE);
+            nWriteStep   := 0;
+            bWriteActive := FALSE;
+        END_IF
+END_CASE]]></ST>
+      </Implementation>
+    </Action>
+    <LineIds Name="FB_HPF3K0_Charger">
+      <LineId Id="221" Count="59" />
+      <LineId Id="450" Count="3" />
+      <LineId Id="284" Count="4" />
+      <LineId Id="314" Count="9" />
+      <LineId Id="447" Count="0" />
+      <LineId Id="324" Count="0" />
+      <LineId Id="448" Count="0" />
+      <LineId Id="326" Count="56" />
+      <LineId Id="454" Count="0" />
+      <LineId Id="383" Count="60" />
+      <LineId Id="9" Count="0" />
+    </LineIds>
+    <LineIds Name="FB_HPF3K0_Charger.ACT_CheckFaults">
+      <LineId Id="2" Count="24" />
+      <LineId Id="1" Count="0" />
+    </LineIds>
+    <LineIds Name="FB_HPF3K0_Charger.ACT_ClearFaults">
+      <LineId Id="2" Count="41" />
+      <LineId Id="1" Count="0" />
+    </LineIds>
+    <LineIds Name="FB_HPF3K0_Charger.ACT_CvRegulate">
+      <LineId Id="68" Count="15" />
+      <LineId Id="1" Count="0" />
+    </LineIds>
+    <LineIds Name="FB_HPF3K0_Charger.ACT_Poll">
+      <LineId Id="2" Count="100" />
+      <LineId Id="1" Count="0" />
+    </LineIds>
+    <LineIds Name="FB_HPF3K0_Charger.ACT_SendOperationOFF">
+      <LineId Id="2" Count="10" />
+      <LineId Id="1" Count="0" />
+    </LineIds>
+    <LineIds Name="FB_HPF3K0_Charger.ACT_SendOperationON">
+      <LineId Id="2" Count="10" />
+      <LineId Id="1" Count="0" />
+      <LineId Id="13" Count="0" />
+    </LineIds>
+    <LineIds Name="FB_HPF3K0_Charger.ACT_SetCurrentLimit">
+      <LineId Id="2" Count="10" />
+      <LineId Id="1" Count="0" />
+    </LineIds>
+    <LineIds Name="FB_HPF3K0_Charger.ACT_SetVoltage">
+      <LineId Id="2" Count="12" />
+      <LineId Id="1" Count="0" />
+    </LineIds>
+    <LineIds Name="FB_HPF3K0_Charger.ACT_WriteParameters">
+      <LineId Id="2" Count="80" />
+      <LineId Id="1" Count="0" />
+    </LineIds>
+  </POU>
+</TcPlcObject>

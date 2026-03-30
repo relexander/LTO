@@ -1,0 +1,30 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4024.12">
+  <POU Name="FUN_ChargerStateToString" Id="{3b1246be-ad07-42f2-b614-00907183fcb8}" SpecialFunc="None">
+    <Declaration><![CDATA[FUNCTION FUN_ChargerStateToString : STRING(32)
+VAR_INPUT
+    eState : E_Charger_State;
+END_VAR]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[CASE eState OF
+    eCHG_IDLE:        FUN_ChargerStateToString := 'IDLE';
+    eCHG_INIT:        FUN_ChargerStateToString := 'INIT';
+    eCHG_CONFIGURING: FUN_ChargerStateToString := 'KONFIGURIEREN';
+    eCHG_CC:          FUN_ChargerStateToString := 'CC-PHASE';
+    eCHG_CV:          FUN_ChargerStateToString := 'CV-PHASE';
+    eCHG_DONE:        FUN_ChargerStateToString := 'LADEN ABGESCHLOSSEN';
+    eCHG_FAULT:       FUN_ChargerStateToString := 'FEHLER';
+    eCHG_FAULT_RESET: FUN_ChargerStateToString := 'FEHLER QUITTIEREN';
+    eCHG_STOPPING:    FUN_ChargerStateToString := 'STOPPEN';
+    eCHG_COMM_ERROR:  FUN_ChargerStateToString := 'KOMM. FEHLER';
+ELSE
+    FUN_ChargerStateToString := 'UNBEKANNT';
+END_CASE]]></ST>
+    </Implementation>
+    <LineIds Name="FUN_ChargerStateToString">
+      <LineId Id="13" Count="3" />
+      <LineId Id="18" Count="8" />
+      <LineId Id="9" Count="0" />
+    </LineIds>
+  </POU>
+</TcPlcObject>

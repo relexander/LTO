@@ -1,0 +1,50 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4024.12">
+  <POU Name="FUN_PMBus_LinearToReal" Id="{9b5c005f-fbdc-4f1c-b37b-366b52f3d251}" SpecialFunc="None">
+    <Declaration><![CDATA[// Konvertiert PMBus Linear-Format (16-Bit) → REAL
+// Format: [15:11] = N (5-bit signed), [10:0] = Y (11-bit signed)
+// Formel: X = Y * 2^N
+// Verwendung: Iout, Vin, Pout, Temp, Fan (NICHT für Vout!)
+FUNCTION FUN_PMBus_LinearToReal : REAL
+VAR_INPUT
+    wRawValue   : WORD;
+END_VAR
+VAR
+    nMantissa   : INT;
+    nExponent   : INT;
+    i           : INT;
+    rResult     : REAL;
+END_VAR]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[// Exponent: Bits 15..11 (5-Bit Two's Complement)
+nExponent := SHR(wRawValue, 11) AND 16#1F;
+IF (nExponent AND 16#10) <> 0 THEN
+    nExponent := nExponent OR 16#FFE0;
+END_IF
+
+// Mantisse: Bits 10..0 (11-Bit Two's Complement)
+nMantissa := wRawValue AND 16#07FF;
+IF (nMantissa AND 16#0400) <> 0 THEN
+    nMantissa := nMantissa OR 16#F800;
+END_IF
+
+// X = Y * 2^N
+rResult := INT_TO_REAL(nMantissa);
+IF nExponent >= 0 THEN
+    FOR i := 1 TO nExponent DO
+        rResult := rResult * 2.0;
+    END_FOR
+ELSE
+    FOR i := 1 TO (-nExponent) DO
+        rResult := rResult / 2.0;
+    END_FOR
+END_IF
+
+FUN_PMBus_LinearToReal := rResult;]]></ST>
+    </Implementation>
+    <LineIds Name="FUN_PMBus_LinearToReal">
+      <LineId Id="126" Count="23" />
+      <LineId Id="9" Count="0" />
+    </LineIds>
+  </POU>
+</TcPlcObject>

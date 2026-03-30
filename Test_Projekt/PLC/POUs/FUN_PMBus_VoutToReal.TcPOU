@@ -1,0 +1,40 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4024.12">
+  <POU Name="FUN_PMBus_VoutToReal" Id="{84768eb4-1993-4c0c-87eb-2ce128fbd7dc}" SpecialFunc="None">
+    <Declaration><![CDATA[FUNCTION FUN_PMBus_VoutToReal : REAL
+VAR_INPUT
+    wRawValue   : WORD;
+    byVoutMode  : BYTE;
+END_VAR
+VAR
+    nN      : INT;
+    rScale  : REAL;
+    i       : INT;
+END_VAR]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[// N aus VOUT_MODE (Bits 4..0, 5-Bit Two's Complement)
+nN := byVoutMode AND 16#1F;
+IF (nN AND 16#10) <> 0 THEN
+    nN := nN OR 16#FFE0;
+END_IF
+
+// Scale = 2^N
+rScale := 1.0;
+IF nN >= 0 THEN
+    FOR i := 1 TO nN DO
+        rScale := rScale * 2.0;
+    END_FOR
+ELSE
+    FOR i := 1 TO (-nN) DO
+        rScale := rScale / 2.0;
+    END_FOR
+END_IF
+
+FUN_PMBus_VoutToReal := WORD_TO_REAL(wRawValue) * rScale;]]></ST>
+    </Implementation>
+    <LineIds Name="FUN_PMBus_VoutToReal">
+      <LineId Id="19" Count="17" />
+      <LineId Id="9" Count="0" />
+    </LineIds>
+  </POU>
+</TcPlcObject>

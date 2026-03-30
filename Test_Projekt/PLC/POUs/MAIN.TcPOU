@@ -1,0 +1,224 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4024.12">
+  <POU Name="MAIN" Id="{2e1aa6e5-14d5-48a6-9991-8c55028e0422}" SpecialFunc="None">
+    <Declaration><![CDATA[PROGRAM MAIN
+VAR
+    // ── Hauptbaustein ────────────────────────────────────────────
+    fbCharger           : FB_HPF3K0_Charger;
+
+    // ── Parameter (einstellbar über OPC UA) ──────────────────────
+    stParams            : ST_Charger_Parameters;
+
+    // ── Befehle ──────────────────────────────────────────────────
+    bCmd_StartCharge    : BOOL;
+    bCmd_StopCharge     : BOOL;
+    bCmd_FaultReset     : BOOL;
+
+    // ── Flanken ──────────────────────────────────────────────────
+    rTrig_Start         : R_TRIG;
+    rTrig_Stop          : F_TRIG;
+    rTrig_DI_ON         : R_TRIG;
+    fTrig_DI_OFF        : F_TRIG;
+
+    // ── Initialisierung ──────────────────────────────────────────
+    bFirstCycle         : BOOL := TRUE;
+END_VAR
+
+VAR
+    // ════════════════════════════════════════════════════════════
+    // OPC UA VARIABLEN
+    // Alle mit Attribut markiert → erscheinen automatisch im
+    // OPC UA Server (TF6100)
+    // ════════════════════════════════════════════════════════════
+
+    // ── Messwerte (Read Only) ────────────────────────────────────
+    {attribute 'OPC.UA.DA' := '1'}
+    rOPC_Vout           : REAL;         // Ladespannung [V]
+    {attribute 'OPC.UA.DA' := '1'}
+    rOPC_Iout           : REAL;         // Ladestrom [A]
+    {attribute 'OPC.UA.DA' := '1'}
+    rOPC_Pout           : REAL;         // Ladeleistung [W]
+    {attribute 'OPC.UA.DA' := '1'}
+    rOPC_Vin            : REAL;         // Eingangsspannung [V]
+    {attribute 'OPC.UA.DA' := '1'}
+    rOPC_Temp_Sec       : REAL;         // Temperatur Secondary [°C]
+    {attribute 'OPC.UA.DA' := '1'}
+    rOPC_Temp_Pri       : REAL;         // Temperatur Primary [°C]
+    {attribute 'OPC.UA.DA' := '1'}
+    rOPC_Fan1_RPM       : REAL;         // Lüfter [RPM]
+
+    // ── Zustand (Read Only) ──────────────────────────────────────
+    {attribute 'OPC.UA.DA' := '1'}
+    sOPC_StateText      : STRING(64);   // Zustandstext
+    {attribute 'OPC.UA.DA' := '1'}
+    bOPC_Charging       : BOOL;         // Ladevorgang aktiv
+    {attribute 'OPC.UA.DA' := '1'}
+    bOPC_ChargeDone     : BOOL;         // Laden abgeschlossen
+    {attribute 'OPC.UA.DA' := '1'}
+    bOPC_Fault          : BOOL;         // Fehler aktiv
+    {attribute 'OPC.UA.DA' := '1'}
+    bOPC_CommOK         : BOOL;         // Kommunikation OK
+
+    // ── Statusbits (Read Only) ───────────────────────────────────
+    {attribute 'OPC.UA.DA' := '1'}
+    bOPC_Vout_OV        : BOOL;         // Überspannung
+    {attribute 'OPC.UA.DA' := '1'}
+    bOPC_OT_Fault       : BOOL;         // Übertemperatur
+    {attribute 'OPC.UA.DA' := '1'}
+    bOPC_OT_Warning     : BOOL;         // Temperaturwarnung
+    {attribute 'OPC.UA.DA' := '1'}
+    bOPC_Fan_Fault      : BOOL;         // Lüfterfehler
+    {attribute 'OPC.UA.DA' := '1'}
+    bOPC_InCC           : BOOL;         // TRUE = CC-Phase aktiv
+    {attribute 'OPC.UA.DA' := '1'}
+    sOPC_LastFault      : STRING(64);   // Letzter Fehlertext
+
+    // ── Diagnose (Read Only) ─────────────────────────────────────
+    {attribute 'OPC.UA.DA' := '1'}
+    rOPC_CommQuality    : REAL;         // Kommunikationsqualität [%]
+    {attribute 'OPC.UA.DA' := '1'}
+    dwOPC_CommOK_Count  : DWORD;
+    {attribute 'OPC.UA.DA' := '1'}
+    dwOPC_CommErr_Count : DWORD;
+    {attribute 'OPC.UA.DA' := '1'}
+    dwOPC_ChargeCount   : DWORD;        // Anzahl Ladevorgänge
+
+    // ── Befehle vom Server (Read/Write) ──────────────────────────
+    {attribute 'OPC.UA.DA' := '1'}
+    bOPC_Cmd_Start      : BOOL;         // Laden starten
+    {attribute 'OPC.UA.DA' := '1'}
+    bOPC_Cmd_Stop       : BOOL;         // Laden stoppen
+    {attribute 'OPC.UA.DA' := '1'}
+    bOPC_Cmd_FaultReset : BOOL;         // Fehler quittieren
+
+    // ── Parameter vom Server (Read/Write) ────────────────────────
+    {attribute 'OPC.UA.DA' := '1'}
+    rOPC_Param_Vout     : REAL := 28.6; // Ladespannung [V]
+    {attribute 'OPC.UA.DA' := '1'}
+    rOPC_Param_Iout     : REAL := 83.0; // Ladestrom [A]
+    {attribute 'OPC.UA.DA' := '1'}
+    rOPC_Param_EndCurr  : REAL := 5.0;  // Ladeschluss-Strom [A]
+END_VAR]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[// ════════════════════════════════════════════════════════════════
+// INITIALISIERUNG (erster Zyklus)
+// ════════════════════════════════════════════════════════════════
+IF bFirstCycle THEN
+    bFirstCycle := FALSE;
+
+    stParams.rVout_Target        := 28.6;
+    stParams.rIout_Limit         := 40.0;
+    stParams.rCharge_End_Current := 5.0;
+    stParams.rVout_OV_Fault      := 29.7;
+    stParams.rVout_OV_Warn       := 29.5;
+    stParams.rVout_UV_Warn       := 15.0;
+    stParams.rVout_UV_Fault      := 14.0;
+END_IF
+
+// ════════════════════════════════════════════════════════════════
+// PARAMETER VALIDIERUNG
+// Schutz vor ungültigen OPC UA Werten
+// ════════════════════════════════════════════════════════════════
+// Ladespannung: 0 bis max. Batterieschutzlimit
+IF rOPC_Param_Vout < 0.0 THEN
+    rOPC_Param_Vout := 28.6;
+END_IF
+IF rOPC_Param_Vout > GVL_HW.c_BAT_VOLTAGE_MAX THEN
+    rOPC_Param_Vout := GVL_HW.c_BAT_CHARGE_VOLTAGE;
+END_IF
+
+// Ladestrom: 1A bis Nennstrom
+IF rOPC_Param_Iout < 1.0 THEN
+    rOPC_Param_Iout := 1.0;
+END_IF
+IF rOPC_Param_Iout > GVL_HW.c_NOMINAL_IOUT THEN
+    rOPC_Param_Iout := GVL_HW.c_BAT_CHARGE_CURRENT;
+END_IF
+
+// Ladeschluss: min. 1A
+IF rOPC_Param_EndCurr < 1.0 THEN
+    rOPC_Param_EndCurr := 1.0;
+END_IF
+
+// Parameter übernehmen
+stParams.rVout_Target        := rOPC_Param_Vout;
+stParams.rIout_Limit         := rOPC_Param_Iout;
+stParams.rCharge_End_Current := rOPC_Param_EndCurr;
+
+// ════════════════════════════════════════════════════════════════
+// BEFEHLE ZUSAMMENFÜHREN
+// Digitaler Eingang ODER OPC UA Befehl
+// ════════════════════════════════════════════════════════════════
+// Flanken digitaler Eingang
+rTrig_DI_ON(CLK := GVL_HW.bDI_PSU_ON_OFF);
+fTrig_DI_OFF(CLK := GVL_HW.bDI_PSU_ON_OFF);
+
+// Start: DI steigende Flanke ODER OPC UA
+bCmd_StartCharge := rTrig_DI_ON.Q OR bOPC_Cmd_Start;
+
+// Stop: DI fallende Flanke ODER OPC UA
+bCmd_StopCharge := fTrig_DI_OFF.Q OR bOPC_Cmd_Stop;
+
+// Not-Halt hat immer Vorrang
+IF NOT GVL_HW.bDI_EmergencyStop THEN
+    bCmd_StopCharge  := TRUE;
+    bCmd_StartCharge := FALSE;
+END_IF
+
+// Fehlerquittierung
+bCmd_FaultReset := bOPC_Cmd_FaultReset;
+
+// Auto-Reset OPC UA Befehle nach einem Zyklus
+bOPC_Cmd_Start      := FALSE;
+bOPC_Cmd_Stop       := FALSE;
+bOPC_Cmd_FaultReset := FALSE;
+
+// ════════════════════════════════════════════════════════════════
+// CHARGER AUFRUFEN
+// ════════════════════════════════════════════════════════════════
+fbCharger(
+    bEnable          := GVL_HW.bDI_EmergencyStop,
+    bCmd_StartCharge := bCmd_StartCharge,
+    bCmd_StopCharge  := bCmd_StopCharge,
+    bCmd_FaultReset  := bCmd_FaultReset,
+    stParams         := stParams
+);
+
+// ════════════════════════════════════════════════════════════════
+// OPC UA VARIABLEN AKTUALISIEREN
+// ════════════════════════════════════════════════════════════════
+// Messwerte
+rOPC_Vout       := fbCharger.stMeas.rVout;
+rOPC_Iout       := fbCharger.stMeas.rIout;
+rOPC_Pout       := fbCharger.stMeas.rPout;
+rOPC_Vin        := fbCharger.stMeas.rVin;
+rOPC_Temp_Sec   := fbCharger.stMeas.rTemp_Sec;
+rOPC_Temp_Pri   := fbCharger.stMeas.rTemp_Pri;
+rOPC_Fan1_RPM   := fbCharger.stMeas.rFan1_RPM;
+
+// Zustand
+sOPC_StateText  := fbCharger.sStateText;
+bOPC_Charging   := fbCharger.bCharging;
+bOPC_ChargeDone := fbCharger.bChargeDone;
+bOPC_Fault      := fbCharger.bFault;
+bOPC_CommOK     := fbCharger.bCommOK;
+
+// Statusbits
+bOPC_Vout_OV    := fbCharger.stStatus.bVout_OV_Fault;
+bOPC_OT_Fault   := fbCharger.stStatus.bOT_Fault;
+bOPC_OT_Warning := fbCharger.stStatus.bOT_Warning;
+bOPC_Fan_Fault  := fbCharger.stStatus.bFan_Fault;
+bOPC_InCC       := fbCharger.stStatus.bInCurrentLimit;
+sOPC_LastFault  := fbCharger.stDiag.sLastFault;
+
+// Diagnose
+rOPC_CommQuality    := fbCharger.stDiag.rCommQuality;
+dwOPC_CommOK_Count  := fbCharger.stDiag.dwCommOK_Count;
+dwOPC_CommErr_Count := fbCharger.stDiag.dwCommErr_Count;
+dwOPC_ChargeCount   := fbCharger.stDiag.nChargeCount;]]></ST>
+    </Implementation>
+    <LineIds Name="MAIN">
+      <LineId Id="103" Count="115" />
+    </LineIds>
+  </POU>
+</TcPlcObject>

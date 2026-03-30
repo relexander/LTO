@@ -1,0 +1,33 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4024.12">
+  <DUT Name="ST_Charger_Diagnostics" Id="{6f5a8e46-8700-4525-ae0a-b12036a24808}">
+    <Declaration><![CDATA[TYPE ST_Charger_Diagnostics :
+STRUCT
+    // ── Kommunikation ────────────────────────────────────────────
+    dwCommOK_Count      : DWORD;
+    dwCommErr_Count     : DWORD;
+    rCommQuality        : REAL;      // [%]
+    bCommAlive          : BOOL;
+    tLastCommOK         : DT;
+
+    // ── Ladestatistik ────────────────────────────────────────────
+    tChargeStartTime    : DT;        // Wann begann der Ladevorgang
+    tChargeEndTime      : DT;        // Wann endete er
+    tChargeDuration     : TIME;      // Ladezeit gesamt
+    nChargeCount        : DWORD;     // Anzahl abgeschlossener Ladevorgänge
+
+    // ── Aktueller Ladezustand ────────────────────────────────────
+    rVbat_atStart       : REAL;      // Batteriespannung bei Ladestart [V]
+
+    // ── Fehlerhistorie ───────────────────────────────────────────
+    aFaultHistory       : ARRAY[0..9] OF STRING(64);
+    nFaultIdx           : INT;
+    sLastFault          : STRING(64);
+
+    // ── Shutdown Event ───────────────────────────────────────────
+    dwShutdownEvent     : DWORD;
+    sShutdownReason     : STRING(80);
+END_STRUCT
+END_TYPE]]></Declaration>
+  </DUT>
+</TcPlcObject>

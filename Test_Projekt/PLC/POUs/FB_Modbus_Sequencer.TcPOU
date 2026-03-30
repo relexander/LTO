@@ -1,0 +1,157 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4024.12">
+  <POU Name="FB_Modbus_Sequencer" Id="{4778df25-534d-4805-9c8e-a09c6a7764f2}" SpecialFunc="None">
+    <Declaration><![CDATA[FUNCTION_BLOCK FB_Modbus_Sequencer
+VAR_INPUT
+    bExecute        : BOOL;
+    nSlaveAdr       : BYTE;
+    nFunctionCode   : BYTE;     // 03=Read, 06=Write
+    nRegAdr         : WORD;
+    nQuantity       : WORD;
+    wWriteData      : WORD;
+    tTimeout        : TIME;
+    nMaxRetry       : UINT;
+END_VAR
+VAR_OUTPUT
+    bBusy           : BOOL;
+    bDone           : BOOL;
+    bError          : BOOL;
+    eErrorCode      : MODBUS_ERRORS;
+    wReadData       : WORD;
+END_VAR
+VAR
+    fbMaster        : ModbusRtuMasterV2_KL6x5B;
+
+    bExecute_old    : BOOL;
+    nRetryCount     : UINT;
+    tRetryTimer     : TON;
+    nStep           : INT;
+
+    aReadBuffer     : ARRAY[0..1] OF WORD;
+    bMasterBusy     : BOOL;
+    bMasterError    : BOOL;
+    eLastError      : MODBUS_ERRORS;
+END_VAR]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[// ── Flankenerkennung ─────────────────────────────────────────────
+IF bExecute AND NOT bExecute_old THEN
+    IF NOT bBusy THEN
+        bDone       := FALSE;
+        bError      := FALSE;
+        nRetryCount := 0;
+        nStep       := 10;
+    END_IF
+END_IF
+bExecute_old := bExecute;
+// ── Zustandsautomat ──────────────────────────────────────────────
+CASE nStep OF
+
+    0: // IDLE
+        bBusy := FALSE;
+
+    10: // Senden
+        bBusy   := TRUE;
+        bDone   := FALSE;
+
+        IF nFunctionCode = 16#03 OR nFunctionCode = 16#04 THEN
+            fbMaster.ReadRegs(
+                UnitID      := nSlaveAdr,
+                Quantity    := nQuantity,
+                MBAddr      := nRegAdr,
+                cbLength    := SIZEOF(aReadBuffer),
+                pMemoryAddr := ADR(aReadBuffer),
+                Execute     := TRUE,
+                Timeout     := tTimeout,
+                BUSY        => bMasterBusy,
+                Error       => bMasterError,
+                ErrorId     => eLastError
+            );
+        ELSE
+            fbMaster.WriteSingleRegister(
+                UnitID      := nSlaveAdr,
+                MBAddr      := nRegAdr,
+                cbLength    := SIZEOF(wWriteData),
+                pMemoryAddr := ADR(wWriteData),
+                Execute     := TRUE,
+                Timeout     := tTimeout,
+                BUSY        => bMasterBusy,
+                Error       => bMasterError,
+                ErrorId     => eLastError
+            );
+        END_IF
+        nStep := 20;
+
+    20: // Warten auf Antwort
+        IF nFunctionCode = 16#03 OR nFunctionCode = 16#04 THEN
+            fbMaster.ReadRegs(
+                UnitID      := nSlaveAdr,
+                Quantity    := nQuantity,
+                MBAddr      := nRegAdr,
+                cbLength    := SIZEOF(aReadBuffer),
+                pMemoryAddr := ADR(aReadBuffer),
+                Execute     := TRUE,
+                Timeout     := tTimeout,
+                BUSY        => bMasterBusy,
+                Error       => bMasterError,
+                ErrorId     => eLastError
+            );
+        ELSE
+            fbMaster.WriteSingleRegister(
+                UnitID      := nSlaveAdr,
+                MBAddr      := nRegAdr,
+                cbLength    := SIZEOF(wWriteData),
+                pMemoryAddr := ADR(wWriteData),
+                Execute     := TRUE,
+                Timeout     := tTimeout,
+                BUSY        => bMasterBusy,
+                Error       => bMasterError,
+                ErrorId     => eLastError
+            );
+        END_IF
+
+        IF NOT bMasterBusy THEN
+            IF NOT bMasterError THEN
+                nStep := 30;
+            ELSE
+                eErrorCode := eLastError;
+                nStep := 40;
+            END_IF
+        END_IF
+
+    30: // Erfolg
+        fbMaster.ReadRegs(Execute := FALSE);
+        fbMaster.WriteSingleRegister(Execute := FALSE);
+        wReadData   := aReadBuffer[0];
+        bDone       := TRUE;
+        bBusy       := FALSE;
+        nStep       := 0;
+
+    40: // Fehler / Retry
+        fbMaster.ReadRegs(Execute := FALSE);
+        fbMaster.WriteSingleRegister(Execute := FALSE);
+        nRetryCount := nRetryCount + 1;
+
+        IF nRetryCount <= nMaxRetry THEN
+            tRetryTimer(IN := TRUE, PT := T#200MS);
+            IF tRetryTimer.Q THEN
+                tRetryTimer(IN := FALSE);
+                nStep := 10;
+            END_IF
+        ELSE
+            bError  := TRUE;
+            bBusy   := FALSE;
+            nStep   := 0;
+        END_IF
+
+END_CASE
+
+// Timer kontinuierlich aufrufen
+tRetryTimer(IN := tRetryTimer.IN);]]></ST>
+    </Implementation>
+    <LineIds Name="FB_Modbus_Sequencer">
+      <LineId Id="303" Count="9" />
+      <LineId Id="314" Count="102" />
+      <LineId Id="9" Count="0" />
+    </LineIds>
+  </POU>
+</TcPlcObject>

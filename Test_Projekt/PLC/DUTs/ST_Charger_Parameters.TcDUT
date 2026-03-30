@@ -1,0 +1,22 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4024.12">
+  <DUT Name="ST_Charger_Parameters" Id="{7b9d27d3-3c9a-4935-888f-e7e1e4c06e6b}">
+    <Declaration><![CDATA[TYPE ST_Charger_Parameters :
+STRUCT
+    // ── Ladeparameter (werden zur Laufzeit gesetzt) ──────────────
+    rVout_Target        : REAL := 28.6;  // Soll-Ladespannung [V]
+    rIout_Limit         : REAL := 83.0;  // CC-Strom Limit [A]
+    rCharge_End_Current : REAL := 5.0;   // Ladeschluss-Strom [A]
+
+    // ── Schutzgrenzen Netzteil ───────────────────────────────────
+    rVout_OV_Fault      : REAL := 29.7;  // OVP hart [V]
+    rVout_OV_Warn       : REAL := 29.5;  // OVP Warnung [V]
+    rVout_UV_Warn       : REAL := 15.0;  // UVP Warnung [V]
+    rVout_UV_Fault      : REAL := 14.0;  // UVP Abschalt [V]
+
+    // ── Flags ────────────────────────────────────────────────────
+    bSaveToEEPROM       : BOOL := FALSE;
+END_STRUCT
+END_TYPE]]></Declaration>
+  </DUT>
+</TcPlcObject>

@@ -1,0 +1,25 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4024.12">
+  <POU Name="FUN_StateToString" Id="{f078f610-eec4-4fa8-8bca-81d378e75205}" SpecialFunc="None">
+    <Declaration><![CDATA[FUNCTION FUN_StateToString : STRING(32)
+VAR_INPUT
+    wState : WORD;
+END_VAR]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[CASE wState OF
+    16#0000: FUN_StateToString := 'INIT';
+    16#0001: FUN_StateToString := 'OFF';
+    16#0002: FUN_StateToString := 'CURRENT_SOFTSTART';
+    16#0003: FUN_StateToString := 'VOLTAGE_SOFTSTART';
+    16#0005: FUN_StateToString := 'ON';
+ELSE
+    FUN_StateToString := CONCAT('UNKNOWN_0x',
+                         WORD_TO_STRING(wState));
+END_CASE]]></ST>
+    </Implementation>
+    <LineIds Name="FUN_StateToString">
+      <LineId Id="13" Count="8" />
+      <LineId Id="9" Count="0" />
+    </LineIds>
+  </POU>
+</TcPlcObject>

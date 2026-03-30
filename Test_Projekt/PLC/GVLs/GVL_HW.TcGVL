@@ -1,0 +1,110 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4024.12">
+  <GVL Name="GVL_HW" Id="{4b5c97b9-72ca-4588-ac3a-4c14d2872746}">
+    <Declaration><![CDATA[{attribute 'qualified_only'}
+VAR_GLOBAL
+    // ── DIGITALE EINGÄNGE (EL1008) ──────────────────────────────
+    bDI_PSU_ON_OFF      AT %I*  : BOOL;  // Kanal 1: EIN/AUS Befehl
+    bDI_EmergencyStop   AT %I*  : BOOL;  // Kanal 2: Not-Halt (NC: TRUE=OK)
+    bDI_FanFail         AT %I*  : BOOL;  // Kanal 3: Pin 17 FAN_FAIL (HIGH=Fehler)
+    bDI_DCOK            AT %I*  : BOOL;  // Kanal 4: Pin 1 DC OK (LOW=OK)
+    bDI_ACOK            AT %I*  : BOOL;  // Kanal 5: Pin 25 AC OK (LOW=OK)
+
+    // ── DIGITALE AUSGÄNGE (EL2008) ──────────────────────────────
+    bDO_PSU_Ready       AT %Q*  : BOOL;  // Rückmeldung Bereit
+    bDO_PSU_Fault       AT %Q*  : BOOL;  // Rückmeldung Fehler
+END_VAR
+
+VAR_GLOBAL CONSTANT
+    // ── MODBUS SLAVE-ADRESSE ─────────────────────────────────────
+    // HPF3K0: A2=A1=A0=1 (offen, intern Pull-up) → Adresse 0xBE
+    c_MODBUS_SLAVE_ADR      : BYTE  := 16#BE;
+
+    // ── SERIELLE KONFIGURATION (Default laut Spec) ───────────────
+    c_BAUD_RATE             : DWORD := 19200;
+    c_PARITY                : BYTE  := 2;    // 2 = Even
+    c_STOP_BITS             : BYTE  := 1;
+    c_DATA_BITS             : BYTE  := 8;
+
+    // ── TIMING ───────────────────────────────────────────────────
+    c_MODBUS_TIMEOUT        : TIME  := T#500MS;
+    c_MODBUS_RETRY          : UINT  := 3;
+    c_POLL_CYCLE            : TIME  := T#500MS;  // 500ms = alle Register ~8s
+    c_FAULT_DEBOUNCE        : TIME  := T#200MS;
+
+    // ── PMBUS COMMAND CODES ──────────────────────────────────────
+    c_CMD_OPERATION         : BYTE  := 16#01;
+    c_CMD_CLEAR_FAULTS      : BYTE  := 16#03;
+    c_CMD_WRITE_PROTECT     : BYTE  := 16#10;
+    c_CMD_STORE_USER_ALL    : BYTE  := 16#15;
+    c_CMD_VOUT_MODE         : BYTE  := 16#20;
+    c_CMD_VOUT_COMMAND      : BYTE  := 16#21;
+    c_CMD_FAN_COMMAND       : BYTE  := 16#3B;
+    c_CMD_IOUT_OC_LIMIT     : BYTE  := 16#46;
+    c_CMD_STATUS_BYTE       : BYTE  := 16#78;
+    c_CMD_STATUS_WORD       : BYTE  := 16#79;
+    c_CMD_STATUS_VOUT       : BYTE  := 16#7A;
+    c_CMD_STATUS_IOUT       : BYTE  := 16#7B;
+    c_CMD_STATUS_INPUT      : BYTE  := 16#7C;
+    c_CMD_STATUS_TEMP       : BYTE  := 16#7D;
+    c_CMD_STATUS_MFR        : BYTE  := 16#80;
+    c_CMD_STATUS_FAN12      : BYTE  := 16#81;
+    c_CMD_READ_VIN          : BYTE  := 16#88;
+    c_CMD_READ_VOUT         : BYTE  := 16#8B;
+    c_CMD_READ_IOUT         : BYTE  := 16#8C;
+    c_CMD_READ_TEMP1        : BYTE  := 16#8D;  // Secondary
+    c_CMD_READ_TEMP2        : BYTE  := 16#8E;  // Primary
+    c_CMD_READ_FAN1         : BYTE  := 16#90;
+    c_CMD_READ_POUT         : BYTE  := 16#96;
+    c_CMD_STATE_INTERNAL    : BYTE  := 16#EC;
+    c_CMD_SHUTDOWN_EVENT    : BYTE  := 16#E8;
+
+    // ── WRITE_PROTECT WERTE ──────────────────────────────────────
+    c_WP_UNLOCK             : BYTE  := 16#00;  // Schreiben erlaubt
+    c_WP_LOCK               : BYTE  := 16#80;  // Schreiben gesperrt
+
+    // ── OPERATION WERTE ──────────────────────────────────────────
+    c_OP_ON                 : BYTE  := 16#80;
+    c_OP_OFF                : BYTE  := 16#00;
+
+    // ── HPF3K0PS36 NENNWERTE ─────────────────────────────────────
+    c_NOMINAL_VOUT          : REAL  := 36.0;   // Volt Nennspannung Netzteil
+    c_MAX_VOUT              : REAL  := 37.8;   // Volt max. (105%)
+    c_NOMINAL_IOUT          : REAL  := 83.3;   // Ampere Nennstrom Netzteil
+    c_MAX_POUT              : REAL  := 3000.0; // Watt
+    c_VOUT_MODE_DEFAULT     : BYTE  := 16#16;
+    c_VOUT_SCALE            : REAL  := 1024.0;
+
+    // ── SCIB BATTERIE LADEPARAMETER (FP01101MCB01A) ──────────────
+    // CC-Phase: Konstantstrom bis CV-Spannung erreicht
+    c_BAT_CHARGE_VOLTAGE    : REAL  := 28.7;   // CV-Spannung [V]
+    c_BAT_CHARGE_CURRENT    : REAL  := 40.0;   // CC-Strom [A] (max. 125A)
+    c_BAT_VOLTAGE_MAX       : REAL  := 29.7;   // Absolutes Schutzlimit [V]
+    c_BAT_VOLTAGE_MIN       : REAL  := 16.5;   // Entladeschluss [V]
+    c_BAT_VOLTAGE_OV_WARN   : REAL  := 29.7;   // Überspannung Warnung Zelle
+    c_BAT_VOLTAGE_UV_WARN   : REAL  := 16.5;   // Unterspannung Warnung
+
+    // CC→CV Übergang: Strom sinkt unter diesen Wert = Ladeende
+    c_BAT_CHARGE_END_CURR   : REAL  := 5.0;    // Ladeschluss [A]
+    // Toleranzband für CV-Regelung
+    c_CV_VOLTAGE_TOLERANCE  : REAL  := 0.1;    // ±0.1V
+    // Schrittweite VOUT_COMMAND in CV-Phase
+    c_CV_STEP_UP            : REAL  := 0.05;   // Volt pro Regelschritt hoch
+    c_CV_STEP_DOWN          : REAL  := 0.10;   // Volt pro Regelschritt runter
+    c_CV_REGULATE_CYCLE     : TIME  := T#200MS;// Regelzyklus CV-Phase
+
+END_VAR
+
+
+//**Zwei wichtige Hinweise zur Verdrahtung** bevor wir weitermachen:
+
+//Die HPF3K0 hat einen **30-poligen JST Stecker** (S30B-PUDSS-1). Die Signale die du an die EL1008 anschließt sind **Opto-Transistor-Ausgänge** — du brauchst eine externe Versorgung dafür (z.B. die 5V Standby des Netzteils, Pin 27/28):
+//```
+//DC OK (Pin 1/2):   Collector → 3K3 → 5VSBY → EL1008 Eingang
+//                   Emitter   → 5VSBY_RTN
+//                   LOW am Eingang = DC OK ✓  →  bDI_DCOK invertieren!
+
+//FAN_FAIL (Pin 17): 3.3V TTL direkt → EL1008
+//                   HIGH = Fehler   →  bDI_FanFail direkt verwenden ✓]]></Declaration>
+  </GVL>
+</TcPlcObject>

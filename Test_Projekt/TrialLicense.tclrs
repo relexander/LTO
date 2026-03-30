@@ -1,0 +1,14 @@
+<?xml version="1.0"?>
+<TcLicenseInfo xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://www.beckhoff.com/schemas/2011/11/TcLicenseInfo">
+	<LicenseInfo>
+		<SystemId>{12511721-8686-A556-E9FA-639E87E53C33}</SystemId>
+		<IssueTime>2026-03-30T10:55:00</IssueTime>
+		<ExpireTime>2026-04-07T00:00:00</ExpireTime>
+		<LicenseKey>0c896db1b58fb42e73c2086120718b3121b0fa7125a996384fd7cc80a5c02b74bf3b9e9f9188d9f1cc1bbd74c2e20911be189859fa8dc4fd212ab59cb2815dc34b14ab6350e310b258a6869f051a5086274239a8fa09721d15f160d4cf2357c14e3da2d23c1e834ad34fca69618f29d7d390ee0b62618cd7e91648088d2f8b251ffd2be526694d8a854924d3f0d278636028d9a55ddda299570d698ab957ecb50a8a566e5049941152f82a813e83d57d5db5421904cac4119096982cd814069279ecffd7272fc8a0ab60d97c46b181085abbf47adc2e849480c80b01571ba060f24b1547a16f154bda042469c1deb4346151901fd2449af9d6580e7e40bfe7bf</LicenseKey>
+		<License>
+			<LicenseId>{A1AF8A04-C08D-4853-A5A0-0E6C3A278A8C}</LicenseId>
+			<Name>TC3 Modbus-RTU</Name>
+			<OrderNo>TF6255</OrderNo>
+		</License>
+	</LicenseInfo>
+</TcLicenseInfo>

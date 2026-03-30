@@ -1,0 +1,17 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4024.12">
+  <DUT Name="ST_PSU_Measurements" Id="{1c750137-f70a-4261-87fe-451b91dea075}">
+    <Declaration><![CDATA[TYPE ST_PSU_Measurements :
+STRUCT
+    rVout           : REAL;     // Ausgangsspannung [V]
+    rIout           : REAL;     // Ausgangsstrom [A]
+    rPout           : REAL;     // Ausgangsleistung [W]
+    rVin            : REAL;     // Eingangsspannung [V RMS]
+    rTemp_Sec       : REAL;     // Temperatur Secondary [°C]
+    rTemp_Pri       : REAL;     // Temperatur Primary [°C]
+    rFan1_RPM       : REAL;     // Lüfter 1 [RPM]
+    tTimestamp      : DT;       // Zeitstempel letzte Messung
+END_STRUCT
+END_TYPE]]></Declaration>
+  </DUT>
+</TcPlcObject>
